@@ -9,7 +9,7 @@
 /**
  * Mission clock task stack size.
  */
-#define MISSION_CLOCK_STACK 70
+#define MISSION_CLOCK_STACK 80
 /**
  * Guidance control task stack size.
  */
@@ -17,7 +17,7 @@
 /**
  * Low priority tasks task stack size.
  */
-#define LOW_PRIORITY_TASKS_STACK 160
+#define LOW_PRIORITY_TASKS_STACK 200
 
 /**
  * The initial countdown (T minus AUTO_MISSION_TIME_SEC)
@@ -78,7 +78,7 @@ static bool healthy_led_on = false;
  * read_line method which will be prepended to the next
  * call to avoid missing any incomplete lines.
  */
-static String last_buf;
+static String last_buf = "";
 
 /**
  * A struct representing the position and velocity vector.
@@ -118,7 +118,7 @@ static const int TRAJECTORY_LEN = 10;
 /**
  * Counter representing the mission time, in seconds.
  */
-static int mission_clock_sec;
+static int mission_clock_sec = 0;
 /**
  * The cached value of the target state vector for the
  * current mission clock time.
@@ -338,9 +338,9 @@ static void end_mission() {
 
         mission_clock_sec++;
         
-        if (mission_clock_sec > 0) {
+        if (mission_clock_sec >= 0) {
             int addr = get_trajectory_addr(mission_clock_sec);
-            EEPROM.readBlock(addr, &target_state);
+            EEPROM.readBlock(addr, target_state);
         }
 
         if (mission_clock_sec == 0) {
@@ -361,11 +361,11 @@ static void end_mission() {
  */
 static void handle_cmd_trajectory(const String &args) {
     int idx_end_idx = args.indexOf(F(" "));
-    int x_end_idx = args.indexOf(F(" "), idx_end_idx);
-    int y_end_idx = args.indexOf(F(" "), x_end_idx);
-    int z_end_idx = args.indexOf(F(" "), y_end_idx);
-    int vx_end_idx = args.indexOf(F(" "), z_end_idx);
-    int vy_end_idx = args.indexOf(F(" "), vx_end_idx);
+    int x_end_idx = args.indexOf(F(" "), idx_end_idx + 1);
+    int y_end_idx = args.indexOf(F(" "), x_end_idx + 1);
+    int z_end_idx = args.indexOf(F(" "), y_end_idx + 1);
+    int vx_end_idx = args.indexOf(F(" "), z_end_idx + 1);
+    int vy_end_idx = args.indexOf(F(" "), vx_end_idx + 1);
 
     struct state_vector v;
     v.x = args.substring(idx_end_idx + 1, x_end_idx).toDouble();
@@ -378,6 +378,19 @@ static void handle_cmd_trajectory(const String &args) {
     int idx = args.substring(0, idx_end_idx).toInt();
     int addr = get_trajectory_addr(idx);
     EEPROM.writeBlock(addr, v);
+
+    Serial.print(F("TRAJECTORY "));
+    Serial.print(v.x);
+    Serial.print(F(" "));
+    Serial.print(v.y);
+    Serial.print(F(" "));
+    Serial.print(v.z);
+    Serial.print(F(" "));
+    Serial.print(v.vx);
+    Serial.print(F(" "));
+    Serial.print(v.vy);
+    Serial.print(F(" "));
+    Serial.println(v.vz);
 }
 
 /**
@@ -396,10 +409,10 @@ static void handle_cmd_begin() {
  */
 static void handle_cmd_sensor(const String &args) {
     int x_end_idx = args.indexOf(F(" "));
-    int y_end_idx = args.indexOf(F(" "), x_end_idx);
-    int z_end_idx = args.indexOf(F(" "), y_end_idx);
-    int vx_end_idx = args.indexOf(F(" "), z_end_idx);
-    int vy_end_idx = args.indexOf(F(" "), vx_end_idx);
+    int y_end_idx = args.indexOf(F(" "), x_end_idx + 1);
+    int z_end_idx = args.indexOf(F(" "), y_end_idx + 1);
+    int vx_end_idx = args.indexOf(F(" "), z_end_idx + 1);
+    int vy_end_idx = args.indexOf(F(" "), vx_end_idx + 1);
 
     sensed_state.x = args.substring(0, x_end_idx).toDouble();
     sensed_state.y = args.substring(x_end_idx + 1, y_end_idx).toDouble();
@@ -452,7 +465,31 @@ static void send_telem() {
     Serial.print(F(" "));
     Serial.print(vy_throttle);
     Serial.print(F(" "));
-    Serial.println(vz_throttle);
+    Serial.print(vz_throttle);
+    Serial.print(F(" "));
+    Serial.print(sensed_state.x);
+    Serial.print(F(" "));
+    Serial.print(sensed_state.y);
+    Serial.print(F(" "));
+    Serial.print(sensed_state.z);
+    Serial.print(F(" "));
+    Serial.print(sensed_state.vx);
+    Serial.print(F(" "));
+    Serial.print(sensed_state.vy);
+    Serial.print(F(" "));
+    Serial.print(sensed_state.vz);
+    Serial.print(F(" "));
+    Serial.print(target_state.x);
+    Serial.print(F(" "));
+    Serial.print(target_state.y);
+    Serial.print(F(" "));
+    Serial.print(target_state.z);
+    Serial.print(F(" "));
+    Serial.print(target_state.vx);
+    Serial.print(F(" "));
+    Serial.print(target_state.vy);
+    Serial.print(F(" "));
+    Serial.println(target_state.vz);
 }
 
 /**
@@ -509,6 +546,8 @@ void setup() {
 
     xTaskCreate(mission_clock, mission_clock_name, MISSION_CLOCK_STACK, nullptr, 3, nullptr);
     xTaskCreate(low_priority_tasks, low_priority_tasks_name, LOW_PRIORITY_TASKS_STACK, nullptr, 1, nullptr);
+
+    Serial.println("READY");
 }
 
 /**
