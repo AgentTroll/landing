@@ -5,7 +5,7 @@ Arduino using FreeRTOS as a preemptive RTOS.
 
 # Wiring
 
-Green LED goes to pin 2 and RED LED goes to pin 3. Set up
+Green LED goes to pin 2 and red LED goes to pin 3. Set up
 the resistors, ground and voltage pins as you desire.
 
 # Building
@@ -21,7 +21,7 @@ serial port as required, but you can run `make` manually
 and use the command-line arguments specified by
 Arduino-CMake-Toolchain if you desire.
 
-```
+``` shell
 git clone https://github.com/AgentTroll/landing.git
 cd landing
 mkdir build && cd build
