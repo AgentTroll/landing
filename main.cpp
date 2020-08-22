@@ -1,5 +1,23 @@
 #include <Arduino.h>
 #include <Arduino_FreeRTOS.h>
+#include <EEPROMex.h>
+#include "pidf_controller.h"
+
+// Numerical values #defined here so as to avoid taking up
+// SRAM space
+
+/**
+ * Mission clock task stack size.
+ */
+#define MISSION_CLOCK_STACK 70
+/**
+ * Guidance control task stack size.
+ */
+#define GUIDANCE_CTL_STACK 300
+/**
+ * Low priority tasks task stack size.
+ */
+#define LOW_PRIORITY_TASKS_STACK 160
 
 /**
  * The initial countdown (T minus AUTO_MISSION_TIME_SEC)
@@ -27,6 +45,22 @@
  * The pin used for the LED indicating an error.
  */
 #define ERROR_LED_PIN 3
+
+/**
+ * Constant name helper to reduce RAM usage for the name of
+ * the mission_clock task.
+ */
+static const char mission_clock_name[] PROGMEM = "mission_clock";
+/**
+ * Constant name helper to reduce RAM usage for the name of
+ * the guidance_ctl task.
+ */
+static const char guidance_ctl_name[] PROGMEM = "guidance_ctl";
+/**
+ * Constant name helper to reduce RAM usage for the name of
+ * the low_priority_tasks task.
+ */
+static const char low_priority_tasks_name[] PROGMEM = "low_priority_tasks";
 
 /**
  * Whether or not the mission has begun and that the
@@ -80,20 +114,33 @@ struct state_vector {
  * The number of elements in the trajectory array.
  */
 static const int TRAJECTORY_LEN = 10;
-/**
- * The trajectory loaded by the TRAJECTORY command,
- * containing one state vector per second of mission time.
- */
-static struct state_vector trajectory[TRAJECTORY_LEN];
 
 /**
  * Counter representing the mission time, in seconds.
  */
 static int mission_clock_sec;
 /**
+ * The cached value of the target state vector for the
+ * current mission clock time.
+ */
+static struct state_vector target_state;
+/**
  * The current state vector based on the last sensor read.
  */
 static struct state_vector sensed_state;
+
+/**
+ * Simulated throttle for the X velocity.
+ */
+static double vx_throttle;
+/**
+ * Simulated throttle for the Y velocity.
+ */
+static double vy_throttle;
+/**
+ * Simulated throttle for the Z velocity.
+ */
+static double vz_throttle;
 
 /**
  * Converts the given number of seconds into ticks. These
@@ -110,15 +157,26 @@ static TickType_t sec_to_ticks(double seconds) {
 }
 
 /**
+ * Computes the address at which to store and retrieve the
+ * target trajectory at the given time index.
+ * 
+ * @param index the time index
+ * @return the EEPROM address
+ */
+static int get_trajectory_addr(int index) {
+    return index * sizeof(struct state_vector);
+}
+
+/**
  * "Raises" an error, which prints the given error message
  * to the serial port and turns on the error LED.
  *
  * @param error the message to print to the serial port
  */
 static void raise_error(const String &error) {
-    Serial.print("ERROR: '");
+    Serial.print(F("ERROR: '"));
     Serial.print(error);
-    Serial.println("'");
+    Serial.println(F("'"));
 
     digitalWrite(ERROR_LED_PIN, HIGH);
     vTaskEndScheduler();
@@ -137,7 +195,7 @@ static bool read_line(String *result) {
         int in = Serial.read();
         if (in == '\n') {
             *result = last_buf;
-            last_buf = "";
+            last_buf = F("");
 
             return true;
         }
@@ -155,39 +213,14 @@ static bool read_line(String *result) {
 static void setup0() {
     Serial.begin(9600);
 
-    Serial.print("configTICK_RATE_HZ = ");
+    Serial.print(F("configTICK_RATE_HZ = "));
     Serial.println(configTICK_RATE_HZ);
 
-    Serial.print("TRAJECTORY_LEN = ");
+    Serial.print(F("TRAJECTORY_LEN = "));
     Serial.println(TRAJECTORY_LEN);
 
     pinMode(HEALTHY_LED_PIN, OUTPUT);
     pinMode(ERROR_LED_PIN, OUTPUT);
-}
-
-/**
- * Handles a command to add the given trajectory arguments
- * to memory.
- *
- * @param args the trajectory command arguments to process
- */
-static void handle_cmd_trajectory(const String &args) {
-    int idx_end_idx = args.indexOf(" ");
-    int x_end_idx = args.indexOf(" ", idx_end_idx);
-    int y_end_idx = args.indexOf(" ", x_end_idx);
-    int z_end_idx = args.indexOf(" ", y_end_idx);
-    int vx_end_idx = args.indexOf(" ", z_end_idx);
-    int vy_end_idx = args.indexOf(" ", vx_end_idx);
-
-    int idx = args.substring(0, idx_end_idx).toInt();
-    state_vector &v = trajectory[idx];
-
-    v.x = args.substring(idx_end_idx + 1, x_end_idx).toDouble();
-    v.y = args.substring(x_end_idx + 1, y_end_idx).toDouble();
-    v.z = args.substring(y_end_idx + 1, z_end_idx).toDouble();
-    v.vx = args.substring(z_end_idx + 1, vx_end_idx).toDouble();
-    v.vy = args.substring(vx_end_idx + 1, vy_end_idx).toDouble();
-    v.vz = args.substring(vy_end_idx + 1).toDouble();
 }
 
 /**
@@ -204,27 +237,71 @@ static double magnitude(double a, double b, double c) {
 }
 
 /**
+ * Simulated "flight termination system" (FTS) subroutine
+ * to check whether the guidance parameters are being met.
+ */
+static void fts_check() {
+    double goal_pos_vec = magnitude(target_state.x, target_state.y, target_state.z);
+    double cur_pos_vec = magnitude(sensed_state.x, sensed_state.y, sensed_state.z);
+    if (abs(goal_pos_vec - cur_pos_vec) > TUNNEL_RAD_M) {
+        raise_error(F("Tunnel bounds exceeded"));
+    }
+
+    double goal_vel_vec = magnitude(target_state.vx, target_state.vy, target_state.vz);
+    double cur_vel_vec = magnitude(sensed_state.vx, sensed_state.vy, sensed_state.vz);
+    if (abs(goal_vel_vec - cur_vel_vec) > MAX_V_ERROR) {
+        raise_error(F("Velocity error exceeded"));
+    }
+}
+
+/**
  * The task for performing guidance.
  *
  * @param args unused
  */
 [[noreturn]] void guidance_ctl(void *args) {
+    pidf_controller x_pidf{1.0, 0.1, 0.0, 0.0, 0.0};
+    pidf_controller y_pidf{1.0, 0.1, 0.0, 0.0, 0.0};
+    pidf_controller z_pidf{1.0, 0.1, 0.0, 0.0, 0.0};
+    pidf_controller vx_pidf{1.0, 0.1, 0.0, 0.0, 0.0};
+    pidf_controller vy_pidf{1.0, 0.1, 0.0, 0.0, 0.0};
+    pidf_controller vz_pidf{1.0, 0.1, 0.0, 0.0, 0.0};
+
     TickType_t prev_time = xTaskGetTickCount();
+
+    TickType_t last_guidance_time = prev_time;
 
     while (true) {
         vTaskDelayUntil(&prev_time, sec_to_ticks(0.1));
 
-        state_vector &goal = trajectory[mission_clock_sec];
-        double goal_pos_vec = magnitude(goal.x, goal.y, goal.z);
-        double cur_pos_vec = magnitude(sensed_state.x, sensed_state.y, sensed_state.z);
-        if (abs(goal_pos_vec - cur_pos_vec) > TUNNEL_RAD_M) {
-            raise_error("Tunnel bounds exceeded");
-        }
+        fts_check();
 
-        double goal_vel_vec = magnitude(goal.vx, goal.vy, goal.vz);
-        double cur_vel_vec = magnitude(sensed_state.vx, sensed_state.vy, sensed_state.vz);
-        if (abs(goal_vel_vec - cur_vel_vec) > MAX_V_ERROR) {
-            raise_error("Velocity error exceeded");
+        TickType_t cur_guidance_time = xTaskGetTickCount();
+        if (cur_guidance_time - last_guidance_time > sec_to_ticks(1.0)) {
+            // Update setpoint for first step
+            x_pidf.set_setpoint(target_state.x);
+            y_pidf.set_setpoint(target_state.y);
+            z_pidf.set_setpoint(target_state.z);
+
+            // Update last state for first step
+            x_pidf.set_last_state(sensed_state.x);
+            y_pidf.set_last_state(sensed_state.y);
+            z_pidf.set_last_state(sensed_state.z);
+
+            // Now update the cascade with the new values
+            vx_pidf.set_setpoint(x_pidf.compute_pidf());
+            vy_pidf.set_setpoint(y_pidf.compute_pidf());
+            vz_pidf.set_setpoint(z_pidf.compute_pidf());
+
+            // Update the velocity current state
+            vx_pidf.set_last_state(sensed_state.vx);
+            vy_pidf.set_last_state(sensed_state.vy);
+            vz_pidf.set_last_state(sensed_state.vz);
+
+            // Obtain the final output values for telemetry
+            vx_throttle = vx_pidf.compute_pidf();
+            vy_throttle = vy_pidf.compute_pidf();
+            vz_throttle = vz_pidf.compute_pidf();
         }
     }
 }
@@ -233,7 +310,7 @@ static double magnitude(double a, double b, double c) {
  * Called at T-0 seconds to start any flight-related tasks.
  */
 static void liftoff() {
-    xTaskCreate(guidance_ctl, "guidance_ctl", 128, nullptr, 2, nullptr);
+    xTaskCreate(guidance_ctl, guidance_ctl_name, GUIDANCE_CTL_STACK, nullptr, 2, nullptr);
 }
 
 /**
@@ -260,6 +337,11 @@ static void end_mission() {
         }
 
         mission_clock_sec++;
+        
+        if (mission_clock_sec > 0) {
+            int addr = get_trajectory_addr(mission_clock_sec);
+            EEPROM.readBlock(addr, &target_state);
+        }
 
         if (mission_clock_sec == 0) {
             liftoff();
@@ -269,6 +351,33 @@ static void end_mission() {
             end_mission();
         }
     }
+}
+
+/**
+ * Handles a command to add the given trajectory arguments
+ * to memory.
+ *
+ * @param args the trajectory command arguments to process
+ */
+static void handle_cmd_trajectory(const String &args) {
+    int idx_end_idx = args.indexOf(F(" "));
+    int x_end_idx = args.indexOf(F(" "), idx_end_idx);
+    int y_end_idx = args.indexOf(F(" "), x_end_idx);
+    int z_end_idx = args.indexOf(F(" "), y_end_idx);
+    int vx_end_idx = args.indexOf(F(" "), z_end_idx);
+    int vy_end_idx = args.indexOf(F(" "), vx_end_idx);
+
+    struct state_vector v;
+    v.x = args.substring(idx_end_idx + 1, x_end_idx).toDouble();
+    v.y = args.substring(x_end_idx + 1, y_end_idx).toDouble();
+    v.z = args.substring(y_end_idx + 1, z_end_idx).toDouble();
+    v.vx = args.substring(z_end_idx + 1, vx_end_idx).toDouble();
+    v.vy = args.substring(vx_end_idx + 1, vy_end_idx).toDouble();
+    v.vz = args.substring(vy_end_idx + 1).toDouble();
+
+    int idx = args.substring(0, idx_end_idx).toInt();
+    int addr = get_trajectory_addr(idx);
+    EEPROM.writeBlock(addr, v);
 }
 
 /**
@@ -286,11 +395,11 @@ static void handle_cmd_begin() {
  * @param args the trajectory command arguments to process
  */
 static void handle_cmd_sensor(const String &args) {
-    int x_end_idx = args.indexOf(" ");
-    int y_end_idx = args.indexOf(" ", x_end_idx);
-    int z_end_idx = args.indexOf(" ", y_end_idx);
-    int vx_end_idx = args.indexOf(" ", z_end_idx);
-    int vy_end_idx = args.indexOf(" ", vx_end_idx);
+    int x_end_idx = args.indexOf(F(" "));
+    int y_end_idx = args.indexOf(F(" "), x_end_idx);
+    int z_end_idx = args.indexOf(F(" "), y_end_idx);
+    int vx_end_idx = args.indexOf(F(" "), z_end_idx);
+    int vy_end_idx = args.indexOf(F(" "), vx_end_idx);
 
     sensed_state.x = args.substring(0, x_end_idx).toDouble();
     sensed_state.y = args.substring(x_end_idx + 1, y_end_idx).toDouble();
@@ -309,22 +418,25 @@ static void handle_cmd_sensor(const String &args) {
 static void handle_cmd(const String &cmd) {
     int type_end_idx = cmd.indexOf(' ');
     if (type_end_idx < 0) {
-        Serial.print("ERROR: Unrecognized command: '");
+        Serial.print(F("ERROR: Unrecognized command: '"));
         Serial.print(cmd);
-        Serial.println("'");
+        Serial.println(F("'"));
         return;
     }
 
     const String cmd_type = cmd.substring(0, type_end_idx);
-    if (cmd_type.equals("TRAJECTORY")) {
+    if (cmd_type.equals(F("TRAJECTORY"))) {
         const String &args = cmd.substring(type_end_idx + 1);
         handle_cmd_trajectory(args);
-    } else if (cmd_type.equals("BEGIN")) {
+    } else if (cmd_type.equals(F("BEGIN"))) {
         handle_cmd_begin();
+    } else if (cmd_type.equals(F("SENSOR"))) {
+        const String &args = cmd.substring(type_end_idx + 1);
+        handle_cmd_sensor(args);
     } else {
-        Serial.print("ERROR: Unrecognized command: '");
+        Serial.print(F("ERROR: Unrecognized command: '"));
         Serial.print(cmd);
-        Serial.println("'");
+        Serial.println(F("'"));
     }
 }
 
@@ -333,9 +445,14 @@ static void handle_cmd(const String &cmd) {
  * downlink on the serial port.
  */
 static void send_telem() {
-    Serial.print("TELEMETRY ");
-    Serial.print("mission_clock_sec = ");
-    Serial.println(mission_clock_sec);
+    Serial.print(F("TELEMETRY "));
+    Serial.print(mission_clock_sec);
+    Serial.print(F(" "));
+    Serial.print(vx_throttle);
+    Serial.print(F(" "));
+    Serial.print(vy_throttle);
+    Serial.print(F(" "));
+    Serial.println(vz_throttle);
 }
 
 /**
@@ -390,8 +507,8 @@ static void blink_led() {
 void setup() {
     setup0();
 
-    xTaskCreate(mission_clock, "mission_clock", 67, nullptr, 3, nullptr);
-    xTaskCreate(low_priority_tasks, "low_priority_tasks", 128, nullptr, 1, nullptr);
+    xTaskCreate(mission_clock, mission_clock_name, MISSION_CLOCK_STACK, nullptr, 3, nullptr);
+    xTaskCreate(low_priority_tasks, low_priority_tasks_name, LOW_PRIORITY_TASKS_STACK, nullptr, 1, nullptr);
 }
 
 /**
@@ -405,7 +522,7 @@ void loop() {
  * error instead.
  */
 void vApplicationMallocFailedHook() {
-    raise_error("Heap exceeded");
+    raise_error(F("Heap exceeded"));
 }
 
 /**
@@ -413,5 +530,5 @@ void vApplicationMallocFailedHook() {
  * error instead.
  */
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName) {
-    raise_error("Stack overflowed");
+    raise_error(F("Stack overflowed"));
 }
