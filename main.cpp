@@ -35,7 +35,7 @@
  * The maximum velocity error above which the FTS would be
  * triggered, in m/s.
  */
-#define MAX_V_ERROR 10
+#define MAX_V_ERROR 50
 
 /**
  * The pin used for the LED indicating the system health.
@@ -212,11 +212,14 @@ static bool read_line(String *result) {
  */
 static void setup0() {
     Serial.begin(9600);
+    while (!Serial) {
+        yield();
+    }
 
-    Serial.print(F("configTICK_RATE_HZ = "));
+    Serial.print(F("INFO configTICK_RATE_HZ = "));
     Serial.println(configTICK_RATE_HZ);
 
-    Serial.print(F("TRAJECTORY_LEN = "));
+    Serial.print(F("INFO TRAJECTORY_LEN = "));
     Serial.println(TRAJECTORY_LEN);
 
     pinMode(HEALTHY_LED_PIN, OUTPUT);
@@ -234,6 +237,45 @@ static void setup0() {
  */
 static double magnitude(double a, double b, double c) {
     return sqrt(a * a + b * b + c * c);
+}
+
+/**
+ * Sends the telemetry information to the simulated
+ * downlink on the serial port.
+ */
+static void send_telem() {
+    Serial.print(F("TELEMETRY "));
+    Serial.print(mission_clock_sec);
+    Serial.print(F(" "));
+    Serial.print(vx_throttle);
+    Serial.print(F(" "));
+    Serial.print(vy_throttle);
+    Serial.print(F(" "));
+    Serial.print(vz_throttle);
+    Serial.print(F(" "));
+    Serial.print(sensed_state.x);
+    Serial.print(F(" "));
+    Serial.print(sensed_state.y);
+    Serial.print(F(" "));
+    Serial.print(sensed_state.z);
+    Serial.print(F(" "));
+    Serial.print(sensed_state.vx);
+    Serial.print(F(" "));
+    Serial.print(sensed_state.vy);
+    Serial.print(F(" "));
+    Serial.print(sensed_state.vz);
+    Serial.print(F(" "));
+    Serial.print(target_state.x);
+    Serial.print(F(" "));
+    Serial.print(target_state.y);
+    Serial.print(F(" "));
+    Serial.print(target_state.z);
+    Serial.print(F(" "));
+    Serial.print(target_state.vx);
+    Serial.print(F(" "));
+    Serial.print(target_state.vy);
+    Serial.print(F(" "));
+    Serial.println(target_state.vz);
 }
 
 /**
@@ -260,12 +302,12 @@ static void fts_check() {
  * @param args unused
  */
 [[noreturn]] void guidance_ctl(void *args) {
-    pidf_controller x_pidf{1.0, 0.1, 0.0, 0.0, 0.0};
-    pidf_controller y_pidf{1.0, 0.1, 0.0, 0.0, 0.0};
-    pidf_controller z_pidf{1.0, 0.1, 0.0, 0.0, 0.0};
-    pidf_controller vx_pidf{1.0, 0.1, 0.0, 0.0, 0.0};
-    pidf_controller vy_pidf{1.0, 0.1, 0.0, 0.0, 0.0};
-    pidf_controller vz_pidf{1.0, 0.1, 0.0, 0.0, 0.0};
+    pidf_controller x_pidf{0.2, 0.90, 0.305, 0.0, 0.0};
+    pidf_controller y_pidf{0.2, 0.90, 0.305, 0.0, 0.0};
+    pidf_controller z_pidf{0.2, 0.90, 0.305, 0.0, 0.0};
+    pidf_controller vx_pidf{0.2, 1.05, 0.02, 0.00, 0.0};
+    pidf_controller vy_pidf{0.2, 1.05, 0.02, 0.00, 0.0};
+    pidf_controller vz_pidf{0.2, 1.05, 0.02, 0.00, 0.0};
 
     TickType_t prev_time = xTaskGetTickCount();
 
@@ -378,19 +420,6 @@ static void handle_cmd_trajectory(const String &args) {
     int idx = args.substring(0, idx_end_idx).toInt();
     int addr = get_trajectory_addr(idx);
     EEPROM.writeBlock(addr, v);
-
-    Serial.print(F("TRAJECTORY "));
-    Serial.print(v.x);
-    Serial.print(F(" "));
-    Serial.print(v.y);
-    Serial.print(F(" "));
-    Serial.print(v.z);
-    Serial.print(F(" "));
-    Serial.print(v.vx);
-    Serial.print(F(" "));
-    Serial.print(v.vy);
-    Serial.print(F(" "));
-    Serial.println(v.vz);
 }
 
 /**
@@ -454,45 +483,6 @@ static void handle_cmd(const String &cmd) {
 }
 
 /**
- * Sends the telemetry information to the simulated
- * downlink on the serial port.
- */
-static void send_telem() {
-    Serial.print(F("TELEMETRY "));
-    Serial.print(mission_clock_sec);
-    Serial.print(F(" "));
-    Serial.print(vx_throttle);
-    Serial.print(F(" "));
-    Serial.print(vy_throttle);
-    Serial.print(F(" "));
-    Serial.print(vz_throttle);
-    Serial.print(F(" "));
-    Serial.print(sensed_state.x);
-    Serial.print(F(" "));
-    Serial.print(sensed_state.y);
-    Serial.print(F(" "));
-    Serial.print(sensed_state.z);
-    Serial.print(F(" "));
-    Serial.print(sensed_state.vx);
-    Serial.print(F(" "));
-    Serial.print(sensed_state.vy);
-    Serial.print(F(" "));
-    Serial.print(sensed_state.vz);
-    Serial.print(F(" "));
-    Serial.print(target_state.x);
-    Serial.print(F(" "));
-    Serial.print(target_state.y);
-    Serial.print(F(" "));
-    Serial.print(target_state.z);
-    Serial.print(F(" "));
-    Serial.print(target_state.vx);
-    Serial.print(F(" "));
-    Serial.print(target_state.vy);
-    Serial.print(F(" "));
-    Serial.println(target_state.vz);
-}
-
-/**
  * Causes the healthy LED to blink and toggles its stored
  * state accordingly.
  */
@@ -516,7 +506,7 @@ static void blink_led() {
     TickType_t last_led_time = last_cycle_time;
 
     while (true) {
-        vTaskDelayUntil(&last_cycle_time, sec_to_ticks(0.1));
+        vTaskDelayUntil(&last_cycle_time, 4);
 
         String command;
         while (read_line(&command)) {
@@ -547,7 +537,7 @@ void setup() {
     xTaskCreate(mission_clock, mission_clock_name, MISSION_CLOCK_STACK, nullptr, 3, nullptr);
     xTaskCreate(low_priority_tasks, low_priority_tasks_name, LOW_PRIORITY_TASKS_STACK, nullptr, 1, nullptr);
 
-    Serial.println("READY");
+    Serial.println(F("READY "));
 }
 
 /**

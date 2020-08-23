@@ -17,7 +17,7 @@ target_link_arduino_libraries(landing
         PRIVATE EEPROMEx)
 target_enable_arduino_upload(landing)
 
-set(DEPLOY_PORT "/dev/ttyUSB1" CACHE STRING "The default port for the deploy command")
+set(DEPLOY_PORT "/dev/ttyUSB0" CACHE STRING "The default port for the deploy command")
 add_custom_target(deploy
         "${CMAKE_COMMAND}"
         "--build" "${CMAKE_BINARY_DIR}"

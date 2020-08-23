@@ -28,7 +28,7 @@ mkdir build && cd build
 cmake .. && make deploy
 
 # If you don't want to bother messing with the 
-# CMakeLists.txt, you can manualy specify the serial port
+# CMakeLists.txt, you can manually specify the serial port
 
 # make upload SERIAL_PORT=<desired port>
 ```
