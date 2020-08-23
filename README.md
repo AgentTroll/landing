@@ -3,6 +3,10 @@
 This is a basic simulated guidance computer running on an
 Arduino using FreeRTOS as a preemptive RTOS.
 
+The companion to this project is 
+[`AgentTroll/houston`](https://github.com/AgentTroll/houston).
+See how to use it at the linked project.
+
 # Wiring
 
 Green LED goes to pin 2 and red LED goes to pin 3. Set up
