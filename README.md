@@ -4,7 +4,7 @@ This is a basic simulated guidance computer running on an
 Arduino using FreeRTOS as a preemptive RTOS.
 
 The companion to this project is 
-[`AgentTroll/houston`](https://github.com/AgentTroll/houston).
+[`caojohnny/houston`](https://github.com/caojohnny/houston).
 See how to use it at the linked project.
 
 # Wiring
@@ -26,7 +26,7 @@ and use the command-line arguments specified by
 Arduino-CMake-Toolchain if you desire.
 
 ``` shell
-git clone https://github.com/AgentTroll/landing.git
+git clone https://github.com/caojohnny/landing.git
 cd landing
 mkdir build && cd build
 cmake .. && make deploy
